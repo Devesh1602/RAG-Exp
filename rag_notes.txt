@@ -1,0 +1,674 @@
+# RAG (Retrieval-Augmented Generation) — Interview Notes
+
+## 1. What is RAG?
+
+**RAG = Retrieval-Augmented Generation**
+
+RAG combines:
+
+* **Retrieval** → find relevant information from an external knowledge source.
+* **Generation** → give that information to an LLM to generate the answer.
+
+### Simple flow
+
+```text
+User Query
+    ↓
+Retriever
+    ↓
+Relevant Documents
+    ↓
+LLM + Retrieved Context
+    ↓
+Answer
+```
+
+### Interview definition
+
+> **RAG is a technique where relevant external information is retrieved and provided as context to an LLM before generating the final response.**
+
+---
+
+# 2. Why is RAG Used?
+
+LLMs have limitations:
+
+### 1. Knowledge cutoff
+
+The model may not know recent information.
+
+```text
+LLM Knowledge
+     ↓
+May be outdated
+```
+
+RAG can retrieve current information from an external source.
+
+### 2. Private/Company Data
+
+An LLM may not have access to:
+
+* Company documents
+* Internal policies
+* Research papers
+* Databases
+* PDFs
+
+RAG retrieves the required information at query time.
+
+### 3. Hallucinations
+
+LLMs can generate plausible but incorrect information.
+
+RAG provides relevant source context, helping the model ground its answer in retrieved information.
+
+### 4. No need to retrain the model
+
+When documents change, you generally update the **knowledge/retrieval layer**, rather than retraining the LLM.
+
+---
+
+# 3. Basic RAG Architecture
+
+```text
+                KNOWLEDGE BASE
+                     │
+                     ↓
+              Load Documents
+                     ↓
+                Chunk Text
+                     ↓
+               Create Embeddings
+                     ↓
+                Vector Store
+                     │
+                     │
+User Query ──────────┘
+      ↓
+Query Embedding
+      ↓
+Similarity Search
+      ↓
+Top-K Relevant Chunks
+      ↓
+Prompt + Context
+      ↓
+     LLM
+      ↓
+Final Answer
+```
+
+---
+
+# 4. RAG Pipeline — Remember This
+
+## Step 1 — Load
+
+Load data from sources such as:
+
+```text
+PDF
+Web pages
+DOCX
+CSV
+Database
+```
+
+---
+
+## Step 2 — Split
+
+Large documents are divided into smaller **chunks**.
+
+Example:
+
+```text
+Large Document
+      ↓
+Chunk 1
+Chunk 2
+Chunk 3
+...
+```
+
+### Why chunk?
+
+Retrieving an entire document is inefficient.
+
+Smaller chunks allow the retriever to find more relevant pieces of information.
+
+---
+
+## Step 3 — Embed
+
+Convert each chunk into a numerical vector using an **embedding model**.
+
+```text
+Text
+ ↓
+Embedding Model
+ ↓
+Vector
+```
+
+Example:
+
+```text
+"Attention mechanism"
+        ↓
+[0.12, -0.43, 0.87, ...]
+```
+
+---
+
+# 5. Vector Database
+
+Embeddings are stored in a vector store such as:
+
+* FAISS
+* Chroma
+* Pinecone
+* Weaviate
+* Milvus
+
+The vector store allows efficient **similarity search**.
+
+```text
+Document Chunks
+      ↓
+Embeddings
+      ↓
+Vector Database
+```
+
+---
+
+# 6. Retrieval
+
+When the user asks:
+
+> "What is scaled dot-product attention?"
+
+The query is converted into an embedding:
+
+```text
+Question
+   ↓
+Query Embedding
+   ↓
+Vector Search
+   ↓
+Top-K Relevant Chunks
+```
+
+The retriever returns the most relevant documents/chunks.
+
+---
+
+# 7. Augmentation
+
+The retrieved documents are added to the LLM prompt as context.
+
+Conceptually:
+
+```text
+System Instructions
++
+Retrieved Context
++
+User Question
+        ↓
+       LLM
+```
+
+Example:
+
+```text
+Context:
+[Relevant document chunks]
+
+Question:
+What is scaled dot-product attention?  
+```
+
+---
+
+# 8. Generation
+
+The LLM uses the retrieved context to generate the final answer.
+
+```text
+Retrieved Context
+       +
+User Question
+       ↓
+      LLM
+       ↓
+Generated Answer
+```
+
+This is the **Generation** part of RAG.
+
+---
+
+# 9. Retriever vs Vector Store
+
+This is an important interview distinction.
+
+### Vector Store
+
+Stores embeddings and performs similarity search.
+
+```text
+Documents → Embeddings → Vector Store
+```
+
+### Retriever
+
+Provides an interface for retrieving relevant documents.
+
+```text
+Query → Retriever → Documents
+```
+
+A vector store can be used **as the backend of a retriever**.
+
+### Interview answer
+
+> **A vector store manages vector storage/search, while a retriever is the interface responsible for returning relevant documents for a query.**
+
+---
+
+# 10. RAG vs Fine-Tuning
+
+Very common interview question.
+
+| RAG                                       | Fine-Tuning                                      |
+| ----------------------------------------- | ------------------------------------------------ |
+| Adds external knowledge at inference time | Changes model behavior/weights                   |
+| Good for changing/private knowledge       | Good for behavior/style/task adaptation          |
+| No model retraining for document updates  | Requires training process                        |
+| Can provide source context                | Knowledge isn't necessarily explicitly retrieved |
+| Usually cheaper/easier to update          | More involved                                    |
+
+### Easy rule
+
+**Need the model to know your changing documents?**
+
+→ **RAG**
+
+**Need the model to behave differently or specialize its output style/task?**
+
+→ **Fine-tuning**
+
+They can also be used together.
+
+---
+
+# 11. RAG vs Long Context
+
+Why not simply put the entire document into the LLM?
+
+Because very large contexts can be:
+
+* Expensive
+* Slow
+* Difficult to manage
+* Less focused
+
+RAG retrieves only the **most relevant information**.
+
+```text
+1,000-page knowledge base
+        ↓
+   User question
+        ↓
+Retrieve relevant chunks
+        ↓
+      5 chunks
+        ↓
+       LLM
+```
+
+---
+
+# 12. What is `Top-K`?
+
+`K` represents how many results the retriever returns.
+
+Example:
+
+```python
+retriever = db.as_retriever(
+    search_kwargs={"k": 5}
+)
+```
+
+means:
+
+> Return the 5 most relevant documents/chunks.
+
+### Interview point
+
+Higher `k`:
+
+* More context
+* Potentially better recall
+* More tokens/noise
+
+Lower `k`:
+
+* Less context
+* Lower cost
+* Potentially missed information
+
+---
+
+# 13. Similarity Search
+
+The query embedding is compared with stored document embeddings.
+
+Common similarity measures include:
+
+* Cosine similarity
+* Euclidean distance
+* Dot product
+
+Conceptually:
+
+```text
+Query Vector
+     ↓
+Compare with document vectors
+     ↓
+Rank by similarity
+     ↓
+Return top-K
+```
+
+---
+
+# 14. Basic LangChain RAG
+
+The architecture you've been working with can be represented as:
+
+```python
+document_chain = create_stuff_documents_chain(
+    llm,
+    prompt
+)
+
+retriever = db.as_retriever()
+
+retrieval_chain = create_retrieval_chain(
+    retriever,
+    document_chain
+)
+```
+
+Then:
+
+```python
+response = retrieval_chain.invoke({
+    "input": "Scaled Dot-Product Attention"
+})
+```
+
+### Internally
+
+```text
+Question
+   ↓
+Retriever
+   ↓
+Relevant Documents
+   ↓
+Document Chain
+   ↓
+Prompt + Documents
+   ↓
+LLM
+   ↓
+Answer
+```
+
+---
+
+# 15. What is `create_stuff_documents_chain()`?
+
+It combines the retrieved documents and places them into the prompt.
+
+Conceptually:
+
+```text
+Documents
+   ↓
+Stuff into prompt
+   ↓
+LLM
+```
+
+**"Stuff" = put the retrieved documents into the prompt as context.**
+
+---
+
+# 16. What is `create_retrieval_chain()`?
+
+It connects:
+
+```text
+Retriever + Document Chain
+```
+
+So:
+
+```text
+User Query
+    ↓
+Retriever
+    ↓
+Documents
+    ↓
+Document Chain
+    ↓
+LLM
+    ↓
+Answer
+```
+
+### Interview answer
+
+> `create_retrieval_chain()` orchestrates retrieval and answer generation, while `create_stuff_documents_chain()` handles passing the retrieved documents into the LLM prompt.
+
+---
+
+# 17. Traditional RAG vs Multimodal RAG
+
+### Traditional RAG
+
+```text
+PDF
+ ↓
+Text
+ ↓
+Chunks
+ ↓
+Embeddings
+ ↓
+Vector DB
+ ↓
+Text Context
+ ↓
+LLM
+```
+
+### Multimodal RAG
+
+```text
+PDF
+ ↓
+Text + Images
+ ↓
+Multimodal Embeddings
+ ↓
+Vector DB
+ ↓
+Text + Images
+ ↓
+Vision LLM
+ ↓
+Answer
+```
+
+This is the architecture from the multimodal project you worked with earlier.
+
+---
+
+# 18. RAG Failure Points — Interview Bonus
+
+A good interviewer may ask:
+
+> "Does RAG always eliminate hallucinations?"
+
+**No.**
+
+RAG reduces hallucination risk but does not guarantee correctness.
+
+Possible failure points:
+
+```text
+Bad Chunking
+     ↓
+Bad Embeddings
+     ↓
+Poor Retrieval
+     ↓
+Wrong Context
+     ↓
+Wrong Answer
+```
+
+Other problems:
+
+* Relevant document not retrieved
+* Too many irrelevant chunks
+* Poor chunk size
+* Query ambiguity
+* Outdated knowledge base
+* LLM misinterpreting retrieved context
+
+---
+
+# 19. How to Improve RAG
+
+If retrieval quality is poor, common techniques include:
+
+### Better chunking
+
+Tune:
+
+```text
+chunk_size
+chunk_overlap
+```
+
+### Better embeddings
+
+Use an embedding model appropriate for the domain.
+
+### Metadata filtering
+
+Filter by:
+
+```text
+document type
+date
+department
+source
+user permissions
+```
+
+### Hybrid search
+
+Combine:
+
+```text
+Keyword Search + Vector Search
+```
+
+### Reranking
+
+Retrieve candidates first, then use a reranker to select the most relevant documents.
+
+```text
+Query
+ ↓
+Retriever → Top 20
+ ↓
+Reranker → Top 5
+ ↓
+LLM
+```
+
+---
+
+# RAG Interview Architecture
+
+```text
+              OFFLINE / INDEXING
+                     │
+             Documents
+                     ↓
+                  Chunk
+                     ↓
+                Embedding
+                     ↓
+               Vector Store
+                     │
+                     │
+                     ↓
+             ONLINE / QUERY
+                     │
+                 User Query
+                     ↓
+             Query Embedding
+                     ↓
+                Retriever
+                     ↓
+             Relevant Chunks
+                     ↓
+          Prompt + Retrieved Context
+                     ↓
+                    LLM
+                     ↓
+               Final Answer
+```
+
+---
+
+# Interview-Ready Explanation
+
+> **"RAG stands for Retrieval-Augmented Generation. It combines a retrieval system with an LLM. During indexing, documents are loaded, chunked, converted into embeddings, and stored in a vector database. At query time, the user's question is embedded and used to retrieve the most relevant chunks. Those chunks are added to the prompt as context, and the LLM generates the final answer based on that context. RAG is mainly used to ground LLM responses in external, private, or frequently changing information without having to retrain the model."**
+
+## One-Line Memory Trick
+
+**`Load → Chunk → Embed → Store → Retrieve → Augment → Generate`**
+
+### 7 things to memorize
+
+```text
+Load       → Get documents
+Chunk      → Split documents
+Embed      → Convert to vectors
+Store      → Save in vector DB
+Retrieve   → Find relevant chunks
+Augment    → Add chunks to prompt
+Generate   → LLM produces answer
+```
+
+### If interviewer asks "Why RAG?"
+
+Answer:
+
+> **"Because LLMs don't inherently have access to every private or up-to-date knowledge source. RAG retrieves relevant external information at inference time and grounds the LLM's response in that context, while avoiding the need to retrain the model whenever the knowledge changes."**
