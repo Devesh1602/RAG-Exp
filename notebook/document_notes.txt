@@ -1,0 +1,454 @@
+# LangChain Data Ingestion & Document Loaders — Interview Notes
+
+## 1. What this code demonstrates
+
+This notebook covers the **Data Ingestion** stage of a RAG pipeline.
+
+It demonstrates how to:
+
+* Create LangChain `Document` objects.
+* Store document metadata.
+* Create text files.
+* Load a single text file using `TextLoader`.
+* Load multiple files using `DirectoryLoader`.
+* Load multiple PDFs using `PyMuPDFLoader`.
+
+### RAG context
+
+```text
+Raw Data
+   ↓
+Data Ingestion  ← This notebook
+   ↓
+Chunking
+   ↓
+Embeddings
+   ↓
+Vector Store
+   ↓
+Retrieval
+   ↓
+LLM
+```
+
+---
+
+# 2. LangChain `Document`
+
+```python
+from langchain_core.documents import Document
+```
+
+A LangChain `Document` is a standard structure for representing a piece of data.
+
+It mainly contains:
+
+```text
+Document
+├── page_content
+└── metadata
+```
+
+Example:
+
+```python
+doc = Document(
+    page_content="this is the main text content I am using to create RAG",
+    metadata={
+        "source": "example.txt",
+        "pages": 1,
+        "author": "Krish Naik",
+        "date_created": "2025-01-01"
+    }
+)
+```
+
+### `page_content`
+
+Contains the actual document text.
+
+### `metadata`
+
+Contains additional information about the document.
+
+Examples:
+
+```text
+source
+page
+author
+date
+document type
+```
+
+### Interview point
+
+> **`page_content` contains the actual data, while `metadata` contains information about that data and can be used for filtering, tracking, and citations.**
+
+---
+
+# 3. Create Text Files
+
+```python
+import os
+
+os.makedirs(
+    "../data/text_files",
+    exist_ok=True
+)
+```
+
+Creates the directory if it doesn't already exist.
+
+Then the notebook creates two sample files:
+
+```text
+python_intro.txt
+machine_learning.txt
+```
+
+These contain basic Python and Machine Learning information.
+
+---
+
+# 4. `TextLoader`
+
+```python
+from langchain_community.document_loaders import TextLoader
+
+loader = TextLoader(
+    "../data/text_files/python_intro.txt",
+    encoding="utf-8"
+)
+
+document = loader.load()
+```
+
+`TextLoader` loads a **single text file** and converts it into LangChain `Document` objects.
+
+Flow:
+
+```text
+python_intro.txt
+       ↓
+   TextLoader
+       ↓
+LangChain Document
+```
+
+### Important
+
+`loader.load()` actually performs the loading operation.
+
+---
+
+# 5. `DirectoryLoader`
+
+```python
+from langchain_community.document_loaders import DirectoryLoader
+```
+
+Used when you want to load **multiple files from a directory**.
+
+```python
+dir_loader = DirectoryLoader(
+    "../data/text_files",
+    glob="**/*.txt",
+    loader_cls=TextLoader,
+    loader_kwargs={
+        "encoding": "utf-8"
+    }
+)
+```
+
+### Important parameters
+
+**`path`**
+
+→ Directory to search.
+
+**`glob="**/*.txt"`**
+
+→ Match `.txt` files, including files in subdirectories.
+
+**`loader_cls=TextLoader`**
+
+→ Use `TextLoader` to process each matched file.
+
+**`loader_kwargs`**
+
+→ Arguments passed to `TextLoader`.
+
+---
+
+# 6. Load Multiple Documents
+
+```python
+documents = dir_loader.load()
+```
+
+Now both text files are loaded.
+
+```text
+data/text_files/
+    ├── python_intro.txt
+    └── machine_learning.txt
+              ↓
+       DirectoryLoader
+              ↓
+       List[Document]
+```
+
+### Interview point
+
+> `TextLoader` is useful for a single text file, while `DirectoryLoader` is useful for batch-loading files from a directory.
+
+---
+
+# 7. PDF Loading
+
+The notebook also demonstrates:
+
+```python
+from langchain_community.document_loaders import (
+    PyPDFLoader,
+    PyMuPDFLoader
+)
+```
+
+Then:
+
+```python
+dir_loader = DirectoryLoader(
+    "../data/pdf",
+    glob="**/*.pdf",
+    loader_cls=PyMuPDFLoader,
+    show_progress=False
+)
+```
+
+This loads PDF files from the directory.
+
+---
+
+# 8. `PyMuPDFLoader`
+
+```python
+loader_cls=PyMuPDFLoader
+```
+
+Uses **PyMuPDF** to extract content from PDFs and convert it into LangChain `Document` objects.
+
+Then:
+
+```python
+pdf_documents = dir_loader.load()
+```
+
+loads the PDFs.
+
+Conceptually:
+
+```text
+PDF
+ ↓
+PyMuPDFLoader
+ ↓
+LangChain Documents
+```
+
+PDF pages are generally represented as separate documents containing page-level content and metadata.
+
+---
+
+# 9. Why Metadata Matters in RAG
+
+Suppose you retrieve a chunk:
+
+```text
+"Python is widely used in AI..."
+```
+
+Metadata can tell you:
+
+```text
+source = python_intro.txt
+page = 1
+```
+
+This becomes useful for:
+
+* Source citations
+* Filtering
+* Debugging retrieval
+* Tracking document origin
+* Access control
+
+Example:
+
+```text
+Query
+ ↓
+Retriever
+ ↓
+Relevant Chunk
+ ↓
+Metadata
+ ↓
+Source: python_intro.txt
+```
+
+---
+
+# 10. Data Ingestion vs Chunking
+
+This distinction is important.
+
+### Data Ingestion
+
+Gets data **into LangChain's document format**.
+
+```text
+PDF/TXT/Web
+    ↓
+Document Loader
+    ↓
+Document
+```
+
+### Chunking
+
+Splits large documents into smaller pieces.
+
+```text
+Document
+    ↓
+Text Splitter
+    ↓
+Chunk 1
+Chunk 2
+Chunk 3
+```
+
+So this notebook mainly covers **ingestion**, not the complete RAG pipeline.
+
+---
+
+# 11. Document Loading Architecture
+
+```text
+                 Raw Data
+                    │
+       ┌────────────┼────────────┐
+       ↓            ↓            ↓
+      TXT          PDF          Web
+       ↓            ↓            ↓
+ TextLoader   PyMuPDFLoader   Web Loader
+       │            │            │
+       └────────────┼────────────┘
+                    ↓
+             LangChain Document
+                    ↓
+                 Chunking
+                    ↓
+                Embeddings
+```
+
+---
+
+# What to Remember for Interview
+
+### `Document`
+
+→ Standard LangChain representation of content.
+
+### `page_content`
+
+→ Actual document text.
+
+### `metadata`
+
+→ Information about the document.
+
+### `TextLoader`
+
+→ Loads a text file.
+
+### `DirectoryLoader`
+
+→ Loads multiple files from a directory.
+
+### `PyMuPDFLoader`
+
+→ Loads/extracts content from PDFs using PyMuPDF.
+
+### `glob`
+
+→ Specifies which files to match.
+
+Example:
+
+```python
+glob="**/*.pdf"
+```
+
+→ Find PDF files recursively.
+
+---
+
+# Most Important Interview Differences
+
+### `TextLoader` vs `DirectoryLoader`
+
+**TextLoader**
+
+```text
+One file → Document
+```
+
+**DirectoryLoader**
+
+```text
+Many files → Documents
+```
+
+---
+
+### `PyPDFLoader` vs `PyMuPDFLoader`
+
+Both can be used for PDF ingestion, but they use different underlying PDF processing implementations.
+
+In this notebook:
+
+```python
+loader_cls=PyMuPDFLoader
+```
+
+is used with `DirectoryLoader` to process the PDFs.
+
+---
+
+# Interview-Ready Explanation
+
+> **"This notebook demonstrates the data ingestion stage of a RAG pipeline using LangChain. I use the `Document` class to represent content with `page_content` and metadata. `TextLoader` loads individual text files, while `DirectoryLoader` allows batch loading of multiple files based on a glob pattern. For PDFs, I use `PyMuPDFLoader` to extract their content into LangChain Documents. This ingestion step prepares raw data for the next RAG stages such as chunking, embedding, vector storage, and retrieval."**
+
+## One-Line Memory Trick
+
+**`Raw Data → Loader → Document → Chunk → Embed → Store`**
+
+### 6 things to memorize
+
+```text
+Document        → Content + Metadata
+TextLoader      → Single TXT file
+DirectoryLoader → Multiple files
+PyMuPDFLoader   → PDF ingestion
+glob            → File matching pattern
+metadata        → Source/page/filtering information
+```
+
+### If interviewer asks "Where does this fit in RAG?"
+
+Answer:
+
+> **"This is the ingestion layer. It converts raw sources such as TXT and PDF files into standardized LangChain Documents, which can then be chunked, embedded, and stored for retrieval."**
