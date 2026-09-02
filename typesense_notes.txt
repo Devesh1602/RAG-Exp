@@ -1,0 +1,639 @@
+# RAG with TypeSense + LangChain + Groq — Interview Notes
+
+## 1. What this project does
+
+This notebook demonstrates **TypeSense as a search/vector-store component** and then integrates it with **LangChain for RAG**.
+
+It has two parts:
+
+1. **TypeSense search** → create a collection, index book data, and perform search/filter/facet operations.
+2. **LangChain + TypeSense RAG** → load text → chunk → embed → store in TypeSense → retrieve relevant documents.
+
+### Main RAG flow
+
+```text
+Text File
+   ↓
+TextLoader
+   ↓
+Chunking
+   ↓
+HuggingFace Embeddings
+   ↓
+TypeSense Vector Store
+   ↓
+Retriever
+   ↓
+Relevant Documents
+   ↓
+LLM
+```
+
+**Important:** The provided notebook stops after retrieval; although `ChatGroq` is imported, the notebook does not actually build the final LLM generation chain.
+
+---
+
+# PART 1 — TypeSense Search
+
+## 2. Import TypeSense
+
+```python
+import typesense
+```
+
+Imports the TypeSense Python client.
+
+TypeSense is a search engine that supports features such as:
+
+* Text search
+* Filtering
+* Sorting
+* Faceting
+
+---
+
+# 3. Create TypeSense Client
+
+```python
+client = typesense.Client({
+    'nodes': [{
+        'host': '...',
+        'port': '443',
+        'protocol': 'https'
+    }],
+    'api_key': '...',
+    'connection_timeout_seconds': 2
+})
+```
+
+Creates a connection to a **TypeSense Cloud instance**.
+
+### Important parameters
+
+* `host` → TypeSense server.
+* `port=443` → HTTPS port.
+* `protocol=https` → secure connection.
+* `api_key` → authentication.
+* `connection_timeout_seconds` → connection timeout.
+
+### Security interview point
+
+The notebook contains API keys directly in code. In production, use:
+
+```text
+Environment Variables / Secret Manager
+```
+
+instead of hardcoding credentials.
+
+---
+
+# 4. Define Collection Schema
+
+```python
+books_schema = {
+    'name': 'books',
+    'fields': [
+        {'name': 'title', 'type': 'string'},
+        {'name': 'authors', 'type': 'string[]', 'facet': True},
+        {'name': 'publication_year', 'type': 'int32', 'facet': True},
+        {'name': 'ratings_count', 'type': 'int32'},
+        {'name': 'average_rating', 'type': 'float'}
+    ],
+    'default_sorting_field': 'ratings_count'
+}
+```
+
+A TypeSense **collection** is similar to a collection/index where documents are stored.
+
+The schema defines:
+
+* Field names
+* Data types
+* Faceting
+* Default sorting
+
+### Example
+
+```text
+books
+ ├── title
+ ├── authors
+ ├── publication_year
+ ├── ratings_count
+ └── average_rating
+```
+
+---
+
+# 5. Create Collection
+
+```python
+client.collections.create(books_schema)
+```
+
+Creates the `books` collection using the defined schema.
+
+---
+
+# 6. Import JSONL Data
+
+```python
+with open('books.jsonl', 'r', encoding='utf-8') as jsonl_file:
+    data = jsonl_file.read()
+
+client.collections['books'].documents.import_(data)
+```
+
+Reads the `books.jsonl` file and imports the documents into TypeSense.
+
+### JSONL
+
+JSONL = **JSON Lines**
+
+Each line represents a separate JSON document.
+
+```text
+Document 1
+Document 2
+Document 3
+...
+```
+
+---
+
+# 7. Basic Search
+
+```python
+search_parameters = {
+    'q': "harry potter",
+    'query_by': "title,authors",
+    'sort_by': "ratings_count:desc"
+}
+```
+
+### Parameters
+
+**`q`**
+
+→ User's search query.
+
+**`query_by`**
+
+→ Fields to search.
+
+**`sort_by`**
+
+→ Sorting order.
+
+So this searches for:
+
+```text
+"harry potter"
+```
+
+inside:
+
+```text
+title + authors
+```
+
+and sorts by:
+
+```text
+ratings_count DESC
+```
+
+---
+
+# 8. Filtering
+
+```python
+search_parameters = {
+    'q': 'harry potter',
+    'query_by': 'title',
+    'filter_by': 'publication_year:<1998',
+    'sort_by': 'publication_year:desc'
+}
+```
+
+This searches for Harry Potter in the title while filtering books published before 1998.
+
+### Remember
+
+```text
+q          → What to search
+query_by   → Where to search
+filter_by  → What to include/exclude
+sort_by    → How to order results
+```
+
+---
+
+# 9. Faceting
+
+```python
+search_parameters = {
+    'q': 'experyment',
+    'query_by': 'title',
+    'facet_by': 'authors',
+    'sort_by': 'average_rating:desc'
+}
+```
+
+`facet_by` allows results to be grouped/aggregated by a field such as author.
+
+### Interview point
+
+> Faceting is useful for building filters and understanding result distributions, such as "how many matching books are from each author?"
+
+---
+
+# PART 2 — LangChain + TypeSense RAG
+
+## 10. Imports
+
+```python
+from langchain_community.document_loaders import TextLoader
+from langchain_community.vectorstores import Typesense
+from langchain_text_splitters import CharacterTextSplitter
+from langchain.embeddings import HuggingFaceEmbeddings
+from langchain_groq import ChatGroq
+```
+
+Important components:
+
+* `TextLoader` → loads text.
+* `CharacterTextSplitter` → chunks text.
+* `HuggingFaceEmbeddings` → creates embeddings.
+* `Typesense` → LangChain integration for TypeSense.
+* `ChatGroq` → LLM integration.
+
+---
+
+# 11. Load Text
+
+```python
+loader = TextLoader("test.txt")
+documents = loader.load()
+```
+
+Loads `test.txt` into LangChain `Document` objects.
+
+```text
+test.txt
+   ↓
+TextLoader
+   ↓
+Documents
+```
+
+---
+
+# 12. Chunk the Document
+
+```python
+text_splitter = CharacterTextSplitter(
+    chunk_size=1000,
+    chunk_overlap=100
+)
+
+docs = text_splitter.split_documents(documents)
+```
+
+Splits the document into chunks.
+
+### Parameters
+
+**`chunk_size=1000`**
+
+→ Approximate maximum chunk size.
+
+**`chunk_overlap=100`**
+
+→ Adjacent chunks share some text.
+
+### Why overlap?
+
+To avoid losing important context at chunk boundaries.
+
+```text
+Chunk 1: A B C D E
+              ↓
+Chunk 2:       D E F G H
+```
+
+---
+
+# 13. Create Embeddings
+
+```python
+embeddings = HuggingFaceEmbeddings()
+```
+
+Creates an embedding model using Hugging Face.
+
+The embedding model converts text into vectors.
+
+```text
+Text Chunk
+    ↓
+Embedding Model
+    ↓
+Vector
+```
+
+Example:
+
+```text
+"Artificial Intelligence"
+        ↓
+[0.21, -0.14, 0.87, ...]
+```
+
+---
+
+# 14. Store Documents in TypeSense
+
+```python
+docsearch = Typesense.from_documents(
+    docs,
+    embeddings,
+    typesense_client_params={
+        "host": "...",
+        "port": "443",
+        "protocol": "https",
+        "typesense_api_key": "...",
+        "typesense_collection_name": "lang-chain"
+    }
+)
+```
+
+This is the key RAG indexing step.
+
+LangChain:
+
+1. Takes the document chunks.
+2. Generates embeddings.
+3. Stores them in the TypeSense-backed vector store.
+
+Conceptually:
+
+```text
+Documents
+   ↓
+HuggingFace Embeddings
+   ↓
+Vectors
+   ↓
+TypeSense
+```
+
+---
+
+# 15. Semantic Search
+
+```python
+query = "What is artificial intelligence"
+
+found_docs = docsearch.similarity_search(query)
+```
+
+The query is compared against stored document embeddings.
+
+The most semantically similar documents are returned.
+
+Then:
+
+```python
+print(found_docs[0].page_content)
+```
+
+prints the most relevant document.
+
+---
+
+# 16. Retriever
+
+```python
+retriever = docsearch.as_retriever()
+```
+
+Converts the vector store into a **Retriever interface**.
+
+Now you can simply do:
+
+```python
+retriever.invoke(query)
+```
+
+and get relevant documents.
+
+### Important distinction
+
+```text
+TypeSense Vector Store
+        ↓
+     Retriever
+        ↓
+Relevant Documents
+```
+
+The retriever provides a standard interface for retrieving documents.
+
+---
+
+# 17. Retrieve Relevant Context
+
+```python
+query = "Artificial intelligence indepth explanation"
+
+retriever.invoke(query)[0]
+```
+
+The query is sent to the retriever.
+
+The retriever:
+
+```text
+Query
+ ↓
+Embedding/Search
+ ↓
+Similarity Search
+ ↓
+Relevant Document
+```
+
+returns the best matching document.
+
+---
+
+# RAG Architecture in This Notebook
+
+```text
+                   INDEXING
+                       │
+                   test.txt
+                       ↓
+                  TextLoader
+                       ↓
+                  Text Chunks
+                       ↓
+              HuggingFace Embeddings
+                       ↓
+                 TypeSense Store
+                       │
+                       │
+                       ↓
+                    QUERY
+                       │
+              "What is AI?"
+                       ↓
+                   Retriever
+                       ↓
+              Similarity Search
+                       ↓
+             Relevant Documents
+                       ↓
+                    LLM*
+                       ↓
+                   Answer
+```
+
+`*` The LLM generation step is not implemented in the provided notebook, although `ChatGroq` is imported.
+
+---
+
+# TypeSense Search vs RAG Retrieval
+
+This is an important interview distinction.
+
+### Normal TypeSense Search
+
+Uses search parameters:
+
+```python
+q
+query_by
+filter_by
+sort_by
+facet_by
+```
+
+Example:
+
+```text
+"harry potter"
+      ↓
+Keyword/Text Search
+      ↓
+Books
+```
+
+### RAG Retrieval
+
+Uses semantic embeddings:
+
+```text
+"What is artificial intelligence?"
+          ↓
+      Embedding
+          ↓
+Similarity Search
+          ↓
+Relevant Chunks
+```
+
+So RAG retrieval is focused on **semantic relevance**, not just exact keyword matching.
+
+---
+
+# What to Remember for Interview
+
+### `TypeSense`
+
+→ Search engine / vector-store integration used for storing and retrieving documents.
+
+### `Collection`
+
+→ Logical container for documents with a defined schema.
+
+### `query_by`
+
+→ Fields to search.
+
+### `filter_by`
+
+→ Restricts matching documents.
+
+### `sort_by`
+
+→ Controls result ordering.
+
+### `facet_by`
+
+→ Enables faceting/grouping.
+
+### `HuggingFaceEmbeddings`
+
+→ Converts text into vectors.
+
+### `similarity_search()`
+
+→ Returns semantically similar documents.
+
+### `as_retriever()`
+
+→ Converts the vector store into a Retriever interface.
+
+---
+
+# Most Important Interview Distinction
+
+### `similarity_search()` vs `as_retriever()`
+
+**`similarity_search()`**
+
+→ Directly performs document similarity search.
+
+```text
+Query → Vector Store → Documents
+```
+
+**`as_retriever()`**
+
+→ Creates a reusable Retriever abstraction.
+
+```text
+Query → Retriever → Vector Store → Documents
+```
+
+The Retriever can then be plugged into a RAG chain.
+
+---
+
+# Interview-Ready Explanation
+
+> **"This project demonstrates RAG using TypeSense with LangChain. First, I load a text file using TextLoader and split it into smaller chunks. I use HuggingFace embeddings to convert those chunks into vectors and store them using the LangChain TypeSense vector-store integration. At query time, the user's question is converted into a compatible embedding representation and similarity search retrieves the most relevant chunks. I can expose the vector store as a LangChain retriever using `as_retriever()`, which can then be connected to an LLM for answer generation. The notebook also demonstrates TypeSense's traditional search capabilities such as filtering, sorting, and faceting."**
+
+## One-Line Memory Trick
+
+**`Load → Chunk → Embed → TypeSense → Retrieve → LLM → Answer`**
+
+### 8 things to memorize
+
+```text
+TextLoader            → Load text
+CharacterTextSplitter → Chunk text
+HuggingFaceEmbeddings → Create vectors
+TypeSense             → Store/search
+similarity_search()   → Retrieve similar docs
+as_retriever()        → Retriever interface
+ChatGroq              → LLM
+RAG                   → Retrieved context + LLM
+```
+
+### If interviewer asks "Why TypeSense?"
+
+> **"TypeSense provides fast search capabilities such as text search, filtering, sorting, and faceting, and in this project it is also integrated with LangChain as the retrieval/vector-store layer for RAG."**

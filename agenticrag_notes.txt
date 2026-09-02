@@ -1,0 +1,632 @@
+# Agentic RAG with LangGraph
+
+## 1. What is Agentic RAG?
+
+**Agentic RAG = RAG + decision-making**
+
+Traditional RAG follows a fixed flow:
+
+```text
+Question
+   ↓
+Retrieve Documents
+   ↓
+Generate Answer
+```
+
+**Agentic RAG** allows the system to decide whether retrieval is necessary before generating the answer.
+
+```text
+                ┌───────────────┐
+Question ──────→│ Decide        │
+                │ Retrieval?    │
+                └───────┬───────┘
+                    Yes │ No
+                        │
+              ┌─────────┴─────────┐
+              ↓                   ↓
+        Retrieve Docs          Generate
+              │                   ↑
+              └───────────────────┘
+                      ↓
+                    END
+```
+
+In this notebook, the decision is implemented using a simple keyword-based heuristic.
+
+---
+
+# 2. Technologies Used
+
+```text
+LangGraph
+    → Workflow / state orchestration
+
+LangChain
+    → LLM, embeddings, documents, vector store
+
+OpenAI GPT-4.1
+    → Answer generation
+
+OpenAI Embeddings
+    → Convert documents/questions into vectors
+
+FAISS
+    → Similarity-based document retrieval
+```
+
+The notebook initializes `ChatOpenAI(model="gpt-4.1", temperature=0)` and `OpenAIEmbeddings()`.
+
+---
+
+# 3. Agent State
+
+LangGraph workflows operate on a shared **state**.
+
+```python
+class AgentState(TypedDict):
+    question: str
+    documents: List[Document]
+    answer: str
+    needs_retrieval: bool
+```
+
+### Meaning
+
+| Field             | Purpose                                |
+| ----------------- | -------------------------------------- |
+| `question`        | User's question                        |
+| `documents`       | Retrieved documents                    |
+| `answer`          | Final generated answer                 |
+| `needs_retrieval` | Decision whether retrieval is required |
+
+The state is passed between nodes and updated as the workflow progresses.
+
+---
+
+# 4. Vector Store + Retriever
+
+The notebook creates four sample documents and stores them in FAISS.
+
+```python
+documents = [
+    Document(page_content=text)
+    for text in sample_texts
+]
+
+vectorstore = FAISS.from_documents(
+    documents,
+    embeddings
+)
+
+retriever = vectorstore.as_retriever(k=3)
+```
+
+Flow:
+
+```text
+Documents
+   ↓
+OpenAI Embeddings
+   ↓
+Vectors
+   ↓
+FAISS
+   ↓
+Retriever
+```
+
+FAISS performs similarity-based retrieval to find relevant documents.
+
+---
+
+# 5. Agent 1 — Decide Whether to Retrieve
+
+```python
+def decide_retrieval(state):
+    question = state["question"]
+
+    retrieval_keywords = [
+        "what",
+        "how",
+        "explain",
+        "describe",
+        "tell me"
+    ]
+
+    needs_retrieval = any(
+        keyword in question.lower()
+        for keyword in retrieval_keywords
+    )
+
+    return {
+        **state,
+        "needs_retrieval": needs_retrieval
+    }
+```
+
+### What is happening?
+
+The agent checks whether the question contains predefined keywords.
+
+For example:
+
+```text
+"What is LangGraph?"
+        ↓
+contains "what"
+        ↓
+needs_retrieval = True
+```
+
+This notebook uses a **simple heuristic**, not an LLM-based decision maker.
+
+> **Important interview point:** This is a demonstration of agentic routing, but the decision logic itself is not sophisticated.
+
+---
+
+# 6. Agent 2 — Retrieve Documents
+
+```python
+def retrieve_documents(state):
+    question = state["question"]
+
+    documents = retriever.invoke(question)
+
+    return {
+        **state,
+        "documents": documents
+    }
+```
+
+Flow:
+
+```text
+Question
+   ↓
+Retriever
+   ↓
+Semantic Search
+   ↓
+Relevant Documents
+   ↓
+State["documents"]
+```
+
+The retrieved documents are stored back into the shared state.
+
+---
+
+# 7. Agent 3 — Generate Answer
+
+The generator checks whether documents are available.
+
+### If documents exist:
+
+```text
+Question + Retrieved Context
+            ↓
+          LLM
+            ↓
+      Grounded Answer
+```
+
+The notebook constructs a prompt containing the retrieved document contents and the question.
+
+### If no documents exist:
+
+```text
+Question
+   ↓
+LLM
+   ↓
+Direct Answer
+```
+
+This is the key Agentic RAG behavior:
+
+```python
+if documents:
+    # RAG
+else:
+    # Direct LLM response
+```
+
+The final answer is generated using:
+
+```python
+response = llm.invoke(prompt)
+answer = response.content
+```
+
+---
+
+# 8. Conditional Routing
+
+This function determines the next node:
+
+```python
+def should_retrieve(state):
+    if state["needs_retrieval"]:
+        return "retrieve"
+    else:
+        return "generate"
+```
+
+So:
+
+```text
+              Decide
+                │
+        ┌───────┴───────┐
+        │               │
+       True           False
+        │               │
+        ↓               ↓
+    Retrieve         Generate
+        │
+        ↓
+    Generate
+```
+
+---
+
+# 9. LangGraph Architecture
+
+The graph is constructed using `StateGraph`.
+
+```python
+workflow = StateGraph(AgentState)
+```
+
+### Nodes
+
+```python
+workflow.add_node("decide", decide_retrieval)
+workflow.add_node("retrieve", retrieve_documents)
+workflow.add_node("generate", generate_answer)
+```
+
+### Entry Point
+
+```python
+workflow.set_entry_point("decide")
+```
+
+### Conditional Edge
+
+```python
+workflow.add_conditional_edges(
+    "decide",
+    should_retrieve,
+    {
+        "retrieve": "retrieve",
+        "generate": "generate"
+    }
+)
+```
+
+### Normal Edges
+
+```python
+workflow.add_edge("retrieve", "generate")
+workflow.add_edge("generate", END)
+```
+
+### Compile
+
+```python
+app = workflow.compile()
+```
+
+---
+
+# 10. Complete Flow
+
+```text
+                 ┌──────────────┐
+                 │   Question   │
+                 └──────┬───────┘
+                        ↓
+               ┌─────────────────┐
+               │ Decide Retrieval│
+               └────────┬────────┘
+                        │
+              ┌─────────┴─────────┐
+              │                   │
+           Retrieve             Direct
+              │                   │
+              ↓                   │
+      ┌───────────────┐           │
+      │ Retrieve Docs │           │
+      └───────┬───────┘           │
+              │                   │
+              └─────────┬─────────┘
+                        ↓
+                ┌──────────────┐
+                │ Generate      │
+                │ Answer        │
+                └──────┬───────┘
+                       ↓
+                      END
+```
+
+---
+
+# 11. Example
+
+Question:
+
+```text
+"What is LangGraph?"
+```
+
+Decision:
+
+```text
+"what" found
+      ↓
+needs_retrieval = True
+```
+
+Then:
+
+```text
+Question
+   ↓
+FAISS Retriever
+   ↓
+Documents
+   ↓
+GPT-4.1
+   ↓
+Answer
+```
+
+The notebook's execution shows the retrieved documents and generated answer in the final state.
+
+---
+
+# 12. Traditional RAG vs Agentic RAG
+
+### Traditional RAG
+
+```text
+Question
+   ↓
+Retrieve
+   ↓
+Generate
+```
+
+Retrieval is always performed.
+
+### Agentic RAG
+
+```text
+Question
+   ↓
+Decide
+   ↓
+ ┌───────────┐
+ ↓           ↓
+Retrieve   No Retrieve
+ ↓           ↓
+ └─────┬─────┘
+       ↓
+    Generate
+```
+
+The important difference is **dynamic decision-making/routing**.
+
+---
+
+# 13. Why Use Agentic RAG?
+
+Agentic RAG can help when every query does not need retrieval.
+
+For example:
+
+```text
+"What is 2 + 2?"
+       ↓
+No retrieval needed
+       ↓
+LLM
+```
+
+Whereas:
+
+```text
+"What does our company policy say about PTO?"
+       ↓
+Retrieval needed
+       ↓
+Company documents
+       ↓
+LLM
+```
+
+This makes the workflow more flexible than a fixed RAG pipeline.
+
+---
+
+# 14. Important LangGraph Concepts
+
+### `StateGraph`
+
+Creates the workflow.
+
+```python
+StateGraph(AgentState)
+```
+
+### Node
+
+A function that performs work.
+
+```text
+decide
+retrieve
+generate
+```
+
+### Edge
+
+Defines workflow movement.
+
+```text
+retrieve → generate
+```
+
+### Conditional Edge
+
+Makes routing decisions.
+
+```text
+decide → retrieve
+decide → generate
+```
+
+### `END`
+
+Terminates the graph.
+
+```text
+generate → END
+```
+
+---
+
+# 15. Agentic RAG vs Agentic Tool Calling
+
+Don't confuse these.
+
+### Agentic RAG
+
+The agent decides **whether/when to retrieve knowledge**.
+
+```text
+Question
+   ↓
+Decision
+   ↓
+Retriever
+   ↓
+LLM
+```
+
+### Tool-Calling Agent
+
+The LLM decides **which tool to call**.
+
+```text
+Question
+   ↓
+LLM
+   ↓
+Tool?
+ ┌─┴─┐
+Yes No
+ ↓   ↓
+Tool Answer
+ ↓
+LLM
+```
+
+Agentic RAG can be extended to use multiple retrieval tools, web search, SQL, APIs, etc.
+
+---
+
+# 16. Important Limitation of This Notebook
+
+The notebook calls this **Agentic RAG**, but the retrieval decision is based on keywords:
+
+```python
+retrieval_keywords = [
+    "what",
+    "how",
+    "explain",
+    "describe",
+    "tell me"
+]
+```
+
+So it is a **simple demonstration of agentic routing**, rather than a production-grade autonomous agent.
+
+A production system could use an LLM/classifier to determine:
+
+```text
+Does this question require:
+    ↓
+Internal documents?
+Web search?
+Database?
+No retrieval?
+```
+
+---
+
+# 17. Interview Questions
+
+### Q1. What is Agentic RAG?
+
+**Answer:**
+
+> Agentic RAG combines RAG with agentic decision-making. Instead of always retrieving documents, the system can decide whether retrieval is necessary and then route the workflow accordingly.
+
+### Q2. Why use LangGraph?
+
+> LangGraph allows us to represent the RAG workflow as a stateful graph with nodes, edges, and conditional routing.
+
+### Q3. What is the state?
+
+> The state is the shared data passed between graph nodes. In this example it contains the question, retrieved documents, answer, and retrieval decision.
+
+### Q4. What makes this system agentic?
+
+> The system dynamically decides whether to retrieve documents before generating the answer instead of following a fixed retrieval path.
+
+### Q5. How is retrieval performed?
+
+> Documents are embedded using OpenAI embeddings, stored in FAISS, and retrieved using a similarity-based retriever.
+
+### Q6. What happens if retrieval isn't needed?
+
+> The workflow skips the retrieval node and directly sends the question to the LLM for generation.
+
+---
+
+# 18. Most Important Interview Distinction
+
+```text
+RAG
+↓
+Retrieve → Generate
+
+Agentic RAG
+↓
+Decide → Retrieve? → Generate
+```
+
+**The key addition is decision-making/routing.**
+
+---
+
+# 19. Interview-Ready Explanation
+
+> “I built an Agentic RAG workflow using LangGraph. The workflow maintains an `AgentState` containing the question, retrieved documents, answer, and a retrieval decision. First, a decision node determines whether retrieval is required. If retrieval is needed, the question is sent to a FAISS-based retriever using OpenAI embeddings, and the retrieved documents are added to the state. The generation node then uses that context to generate a grounded answer. If retrieval isn't required, the workflow directly generates an answer using the LLM. LangGraph handles the state management and conditional routing between these nodes.”
+
+---
+
+# 20. One-Line Memory Trick
+
+> **Agentic RAG = Decide → Retrieve if needed → Generate.**
+
+**Remember:**
+`State = Data`
+`Node = Work`
+`Edge = Movement`
+`Conditional Edge = Decision`
+`Retriever = Knowledge`
+`LLM = Generation`
