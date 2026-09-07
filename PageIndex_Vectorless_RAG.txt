@@ -1,0 +1,1053 @@
+# PageIndex — Vectorless RAG
+
+## 1. What is Vectorless RAG?
+
+**Vectorless RAG = RAG without embeddings or a vector database.**
+
+Traditional RAG:
+
+```text
+Document
+   ↓
+Chunk
+   ↓
+Embedding
+   ↓
+Vector DB
+   ↓
+Similarity Search
+   ↓
+Relevant Chunks
+   ↓
+LLM
+```
+
+PageIndex-style Vectorless RAG:
+
+```text
+Document / PDF
+      ↓
+Understand Structure
+      ↓
+Hierarchical Tree Index
+      ↓
+LLM Tree Search
+      ↓
+Relevant Sections
+      ↓
+LLM
+      ↓
+Answer + Citations
+```
+
+The notebook specifically presents PageIndex as **reasoning-based RAG with no vector DB and no chunking**.
+
+---
+
+# 2. Why Vectorless RAG?
+
+Traditional vector RAG retrieves content based mainly on **semantic similarity**.
+
+```text
+Query
+  ↓
+Embedding
+  ↓
+Similarity Search
+  ↓
+Top-K Chunks
+```
+
+The problem is:
+
+> **Similarity does not always equal relevance.**
+
+For professional documents such as:
+
+* Annual reports
+* Financial documents
+* Legal documents
+* Research papers
+* Technical manuals
+* Textbooks
+
+the **document structure itself** can contain important information.
+
+For example:
+
+```text
+Annual Report
+├── Business Overview
+├── Financial Results
+├── Risk Factors
+├── MD&A
+│   ├── Revenue
+│   ├── Expenses
+│   └── Liquidity
+└── Outlook
+```
+
+Knowing **where** information belongs can be more useful than simply finding text that is semantically similar.
+
+---
+
+# 3. PageIndex's Main Idea
+
+Instead of creating arbitrary chunks:
+
+```text
+PDF
+ ↓
+500-token chunk
+ ↓
+500-token chunk
+ ↓
+500-token chunk
+```
+
+PageIndex builds a **hierarchical tree representing the document structure**.
+
+```text
+Document
+│
+├── Introduction
+│   └── Background
+│
+├── Financial Stability
+│   ├── Monitoring Vulnerabilities
+│   └── International Cooperation
+│
+└── Conclusion
+```
+
+The tree acts like a **smart Table of Contents**.
+
+Each node can contain:
+
+```text
+node_id
+title
+page_index
+text / summary
+children
+```
+
+---
+
+# 4. Why No Chunking?
+
+Traditional RAG might split a document using:
+
+```text
+chunk_size = 500
+chunk_overlap = 100
+```
+
+This can break logical sections.
+
+Example:
+
+```text
+Section:
+"Revenue increased because of..."
+
+       ↓ arbitrary chunk boundary
+
+"...international demand."
+```
+
+The information may become separated.
+
+PageIndex instead tries to preserve the author's structure:
+
+```text
+Chapter
+   ↓
+Section
+   ↓
+Subsection
+   ↓
+Paragraph / Content
+```
+
+So retrieval happens at the **document-section level** rather than arbitrary token chunks.
+
+---
+
+# 5. PageIndex Workflow
+
+The notebook's core workflow is:
+
+```text
+             PDF
+              ↓
+       PageIndex Processing
+              ↓
+      Hierarchical Tree
+              ↓
+        LLM Tree Search
+              ↓
+        Relevant Node IDs
+              ↓
+       Retrieve Node Content
+              ↓
+       LLM Answer Generation
+              ↓
+        Grounded Answer
+```
+
+The notebook describes the end-to-end pipeline as three main steps:
+
+```text
+1. Tree Search
+2. Retrieve
+3. Generate
+```
+
+---
+
+# 6. Upload the PDF
+
+The notebook uses:
+
+```python
+result = pi_client.submit_document(PDF_PATH)
+
+doc_id = result["doc_id"]
+```
+
+The returned `doc_id` identifies the uploaded document.
+
+```text
+PDF
+ ↓
+PageIndex Cloud
+ ↓
+doc_id
+```
+
+The document can then be used for subsequent operations.
+
+---
+
+# 7. Tree Index Generation
+
+PageIndex processes the PDF asynchronously.
+
+Conceptually:
+
+```text
+PDF
+ ↓
+Read document
+ ↓
+Understand structure
+ ↓
+Identify sections
+ ↓
+Build hierarchy
+ ↓
+Tree Index
+```
+
+The notebook polls the document status until:
+
+```text
+status == "completed"
+```
+
+Only after processing is complete is the tree ready for querying.
+
+---
+
+# 8. Inspecting the Tree
+
+The notebook retrieves the tree with:
+
+```python
+tree_result = pi_client.get_tree(
+    doc_id,
+    node_summary=True
+)
+
+pageindex_tree = tree_result.get(
+    "result",
+    []
+)
+```
+
+Then it recursively prints the tree:
+
+```text
+[0001] Introduction
+   └─ [0002] Background
+[0003] Financial Stability
+   ├─ [0004] Monitoring Vulnerabilities
+   └─ [0005] International Cooperation
+```
+
+This gives the retrieval system knowledge of:
+
+```text
+Section
+   +
+Hierarchy
+   +
+Page
+   +
+Content
+```
+
+---
+
+# 9. Core Concept — LLM Tree Search
+
+This is the most important part.
+
+### Traditional Vector RAG
+
+```text
+Query
+ ↓
+Embedding
+ ↓
+Cosine Similarity
+ ↓
+Top-K Chunks
+```
+
+### PageIndex
+
+```text
+Query + Document Tree
+          ↓
+         LLM
+          ↓
+Reason about structure
+          ↓
+Select relevant nodes
+```
+
+Example:
+
+```text
+Question:
+"What are the company's liquidity risks?"
+
+                 ↓
+
+            LLM Tree Search
+
+                 ↓
+
+Risk Factors
+      +
+MD&A
+      +
+Liquidity section
+
+                 ↓
+
+Relevant node IDs
+```
+
+The LLM acts more like a **human researcher navigating a document**.
+
+---
+
+# 10. `llm_tree_search()`
+
+The notebook defines:
+
+```python
+def llm_tree_search(
+    query: str,
+    tree: list,
+    model: str = "gpt-4o"
+) -> dict:
+```
+
+Its job is:
+
+```text
+Input:
+    query
+    document tree
+
+Output:
+    thinking
+    node_list
+```
+
+Conceptually:
+
+```json
+{
+    "thinking": "...",
+    "node_list": ["0007", "0008"]
+}
+```
+
+The important output is:
+
+```text
+node_list
+```
+
+because those node IDs tell the system which sections to retrieve.
+
+---
+
+# 11. Why Compress the Tree?
+
+A large document could contain hundreds or thousands of nodes.
+
+Sending the entire tree with full text to the LLM would be expensive.
+
+The notebook therefore compresses the tree and sends information such as:
+
+```text
+node_id
+title
+short summary
+```
+
+instead of all document content.
+
+```text
+Large Tree
+   ↓
+Compress
+   ↓
+Titles + Summaries
+   ↓
+LLM
+```
+
+Then only the selected nodes are fetched for detailed context.
+
+This is an important efficiency pattern:
+
+> **Use a lightweight structural representation for search, then retrieve full content only for selected nodes.**
+
+---
+
+# 12. Node Retrieval
+
+Once the LLM returns node IDs, the notebook uses:
+
+```python
+find_nodes_by_ids(
+    tree,
+    target_ids
+)
+```
+
+This recursively walks the tree and finds the selected nodes.
+
+```text
+Tree
+ │
+ ├── Node 1
+ ├── Node 2 ← selected
+ │    └── Node 3
+ └── Node 4 ← selected
+
+          ↓
+
+Relevant Nodes
+```
+
+So:
+
+```text
+LLM chooses WHERE
+        ↓
+find_nodes_by_ids()
+        ↓
+Fetch WHAT is there
+```
+
+---
+
+# 13. Answer Generation
+
+The retrieved nodes become the context for the LLM.
+
+```text
+Question
+   +
+Retrieved Sections
+   ↓
+GPT-4o
+   ↓
+Grounded Answer
+```
+
+The generation function is:
+
+```python
+generate_answer(
+    query,
+    nodes
+)
+```
+
+The prompt instructs the LLM to use the retrieved content and provide section/page references.
+
+This gives:
+
+```text
+Answer
++
+Source Section
++
+Page Number
+```
+
+---
+
+# 14. Complete `vectorless_rag()`
+
+The notebook combines everything into:
+
+```python
+vectorless_rag(
+    query,
+    tree
+)
+```
+
+Conceptually:
+
+```python
+def vectorless_rag(query, tree):
+
+    # 1. Search tree
+    result = llm_tree_search(query, tree)
+
+    # 2. Find selected nodes
+    nodes = find_nodes_by_ids(
+        tree,
+        result["node_list"]
+    )
+
+    # 3. Generate answer
+    answer = generate_answer(
+        query,
+        nodes
+    )
+
+    return answer
+```
+
+So the complete pipeline is:
+
+```text
+Query
+ ↓
+LLM Tree Search
+ ↓
+Node IDs
+ ↓
+Find Nodes
+ ↓
+Section Content
+ ↓
+LLM
+ ↓
+Cited Answer
+```
+
+---
+
+# 15. Expert-Guided Retrieval
+
+This is one of the most interesting features in the notebook.
+
+You can give the LLM **domain-specific routing rules**.
+
+Example:
+
+```text
+If query mentions EBITDA
+        ↓
+Prioritize MD&A
+
+If query asks about risks
+        ↓
+Prioritize Risk Factors
+
+If query asks about liquidity
+        ↓
+Check Cash Flow + Liquidity sections
+```
+
+Instead of modifying the embedding model:
+
+```text
+Traditional Vector RAG
+        ↓
+Fine-tune embedding model
+```
+
+PageIndex can use:
+
+```text
+Domain Knowledge
+       ↓
+Prompt Rules
+       ↓
+LLM Tree Search
+```
+
+---
+
+# 16. Why Expert Rules Are Powerful
+
+Imagine a financial document.
+
+Question:
+
+```text
+"What are the company's profitability risks?"
+```
+
+A generic vector search may retrieve:
+
+```text
+Market Risk
+Economic Risk
+Product Risk
+Profitability
+```
+
+But an expert may know:
+
+```text
+Profitability
+     ↓
+MD&A
+     ↓
+Specific financial metrics
+```
+
+The expert rule tells the LLM where to look.
+
+Therefore:
+
+> **Expert knowledge becomes a retrieval-routing mechanism.**
+
+---
+
+# 17. `llm_tree_search_with_expert()`
+
+The notebook extends the basic search:
+
+```python
+llm_tree_search_with_expert(
+    query,
+    tree,
+    expert_rules
+)
+```
+
+Flow:
+
+```text
+Query
+  +
+Document Tree
+  +
+Expert Rules
+       ↓
+      LLM
+       ↓
+Relevant Nodes
+```
+
+Then:
+
+```python
+expert_rag(
+    query,
+    tree,
+    rules
+)
+```
+
+combines:
+
+```text
+Expert Tree Search
+       ↓
+Node Retrieval
+       ↓
+Answer Generation
+```
+
+---
+
+# 18. PageIndex Chat API
+
+The notebook also demonstrates PageIndex's own Chat API.
+
+```python
+response = pi_client.chat_completions(
+    messages=[
+        {
+            "role": "user",
+            "content": question
+        }
+    ],
+    doc_id=doc_id
+)
+```
+
+Conceptually:
+
+```text
+Question
+   ↓
+PageIndex Chat API
+   ↓
+Document Tree + Retrieval + LLM
+   ↓
+Answer
+```
+
+This provides a simpler interface when you don't want to manually manage the retrieval and OpenAI calls.
+
+---
+
+# 19. Multi-Turn Chat
+
+The notebook maintains:
+
+```python
+conversation_history = []
+```
+
+Each user message is appended:
+
+```python
+conversation_history.append({
+    "role": "user",
+    "content": user_message
+})
+```
+
+Then the full conversation history is sent to the Chat API.
+
+```text
+Question 1
+   ↓
+Answer 1
+   ↓
+Question 2
+   ↓
+Answer 2
+   ↓
+Question 3
+   ↓
+Answer 3
+```
+
+This allows the document chat to maintain conversational context.
+
+---
+
+# 20. Self-Hosted PageIndex
+
+The notebook also demonstrates an open-source/self-hosted option.
+
+Conceptually:
+
+```text
+PDF
+ ↓
+Local PageIndex
+ ↓
+Tree JSON
+ ↓
+Local RAG
+```
+
+The local runner:
+
+```text
+1. Reads PDF
+2. Detects Table of Contents
+3. Builds hierarchical tree
+4. Saves tree as JSON
+```
+
+The generated tree can then be used with the same retrieval functions.
+
+---
+
+# 21. Cloud vs Self-Hosted
+
+### PageIndex Cloud
+
+```text
+PDF
+ ↓
+PageIndex Cloud
+ ↓
+doc_id
+ ↓
+Tree
+```
+
+### Self-Hosted
+
+```text
+PDF
+ ↓
+Local PageIndex
+ ↓
+JSON Tree
+ ↓
+Local Retrieval
+```
+
+Self-hosting can be useful when you need:
+
+* Data privacy
+* On-prem deployment
+* More control
+* Customization
+* Local processing
+
+---
+
+# 22. Vector RAG vs Vectorless RAG
+
+| Aspect               | Vector RAG                 | PageIndex / Vectorless RAG        |
+| -------------------- | -------------------------- | --------------------------------- |
+| Document preparation | Chunking                   | Hierarchical tree                 |
+| Embeddings           | Required                   | Not required                      |
+| Vector DB            | Required                   | Not required                      |
+| Retrieval            | Similarity search          | LLM reasoning                     |
+| Retrieval unit       | Chunks                     | Document sections/nodes           |
+| Structure awareness  | Limited                    | Strong                            |
+| Page/section context | May be lost                | Preserved                         |
+| Expert routing       | Usually additional logic   | Prompt-based rules                |
+| Best fit             | General semantic retrieval | Structured/professional documents |
+
+---
+
+# 23. Traditional RAG Architecture
+
+```text
+             DOCUMENT
+                ↓
+             Chunking
+                ↓
+            Embeddings
+                ↓
+           Vector Database
+                ↓
+              Query
+                ↓
+          Query Embedding
+                ↓
+        Similarity Search
+                ↓
+             Top-K
+                ↓
+               LLM
+                ↓
+             Answer
+```
+
+---
+
+# 24. PageIndex Architecture
+
+```text
+             DOCUMENT
+                ↓
+        Structure Analysis
+                ↓
+         Hierarchical Tree
+                ↓
+              Query
+                ↓
+         LLM Tree Search
+                ↓
+        Relevant Node IDs
+                ↓
+       Retrieve Full Sections
+                ↓
+               LLM
+                ↓
+        Answer + Citations
+```
+
+### Core distinction
+
+```text
+Vector RAG:
+"Which chunks are similar?"
+
+PageIndex:
+"Which sections should I inspect?"
+```
+
+That is the most important conceptual difference.
+
+---
+
+# 25. When Would You Use PageIndex?
+
+PageIndex is particularly interesting for documents where **structure and hierarchy matter**.
+
+Examples:
+
+```text
+10-K / Annual Reports
+        ↓
+MD&A / Risk Factors / Financial Statements
+
+Legal Documents
+        ↓
+Sections / Clauses / Articles
+
+Research Papers
+        ↓
+Abstract / Methodology / Results / Conclusion
+
+Textbooks
+        ↓
+Chapter / Section / Subsection
+
+Technical Documentation
+        ↓
+Architecture / API / Configuration / Examples
+```
+
+---
+
+# 26. Limitations
+
+Vectorless RAG is **not automatically better than vector RAG**.
+
+Potential trade-offs:
+
+### 1. LLM Cost
+
+Tree search requires an LLM to reason over the tree.
+
+```text
+Query
+ ↓
+LLM reasoning
+ ↓
+Retrieval
+```
+
+### 2. Latency
+
+There can be additional reasoning before retrieval.
+
+### 3. Tree Quality
+
+If the document structure is poorly understood, retrieval quality can suffer.
+
+### 4. Large Trees
+
+Very large document trees still need compression or hierarchical search.
+
+### 5. Not Every Dataset Is Hierarchical
+
+For short, unstructured text, vector search may be simpler and cheaper.
+
+---
+
+# 27. Interview Questions
+
+### Q1. What is Vectorless RAG?
+
+> Vectorless RAG retrieves information without converting documents into embeddings or storing them in a vector database. PageIndex builds a hierarchical document tree and uses an LLM to reason over that structure to select relevant sections.
+
+### Q2. How does PageIndex retrieve documents?
+
+> It gives the LLM a structural representation of the document tree. The LLM reasons about the query and identifies the node IDs containing relevant information.
+
+### Q3. How is this different from vector RAG?
+
+> Vector RAG uses embedding similarity to retrieve chunks, while PageIndex uses LLM reasoning over document structure to identify relevant sections.
+
+### Q4. Why doesn't PageIndex need chunking?
+
+> Instead of arbitrarily splitting documents into fixed-size chunks, PageIndex preserves the document's natural hierarchy and retrieves sections or nodes.
+
+### Q5. What is a node?
+
+> A node represents a retrievable section of the document and can contain an ID, title, page information, summary, and child nodes.
+
+### Q6. Why compress the tree?
+
+> To reduce the number of tokens sent to the LLM. The search phase can use titles and summaries, while the full content is retrieved only for selected nodes.
+
+### Q7. What is expert-guided retrieval?
+
+> It injects domain-specific routing rules into the LLM prompt so the model knows which document sections should be prioritized for particular types of questions.
+
+### Q8. Can PageIndex work without OpenAI?
+
+> The notebook's demonstrated PageIndex workflow uses OpenAI models, while its self-hosted option still uses an OpenAI key for tree generation.
+
+---
+
+# 28. Most Important Interview Distinction
+
+```text
+Vector RAG
+──────────
+Embed → Similarity Search → Top-K Chunks → LLM
+
+
+Vectorless RAG
+──────────────
+Tree → LLM Reasoning → Relevant Sections → LLM
+```
+
+### Think of it this way:
+
+**Vector RAG asks:**
+
+> “Which text is mathematically similar to my query?”
+
+**PageIndex asks:**
+
+> “Given the structure of this document, which sections should I inspect to answer this question?”
+
+---
+
+# 29. Interview-Ready Explanation
+
+> “I worked with PageIndex to understand a vectorless RAG architecture for structured documents. Instead of chunking a PDF and embedding every chunk into a vector database, PageIndex builds a hierarchical tree representing the document's natural structure. At query time, an LLM performs tree search and reasons over section titles and summaries to identify the relevant node IDs. We then retrieve the actual content from those nodes and pass it to another LLM to generate a grounded answer with section and page citations. The approach is especially useful for structured documents such as financial reports, legal documents, research papers, and technical documentation, where understanding the document hierarchy can be more useful than pure semantic similarity.”
+
+---
+
+# 30. One-Line Memory Trick
+
+> **PageIndex = PDF → Tree → LLM Reasoning → Relevant Sections → Grounded Answer.**
+
+### Remember these 6 things:
+
+```text
+1. No Embeddings
+2. No Vector DB
+3. No Arbitrary Chunking
+4. Hierarchical Tree
+5. LLM Tree Search
+6. Section-aware Answer Generation
+```
+
+**The simplest way to remember it:**
+
+> **Vector RAG searches vectors. PageIndex searches the document's structure.**

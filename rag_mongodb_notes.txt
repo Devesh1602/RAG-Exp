@@ -1,0 +1,728 @@
+# RAG with MongoDB Atlas Vector Search
+
+## 1. What is this project?
+
+This notebook implements a **RAG pipeline using MongoDB as the vector database**.
+
+Instead of using FAISS, the document embeddings are stored directly in a MongoDB collection, and MongoDB Atlas Vector Search is used to retrieve semantically similar documents.
+
+```text
+Documents
+   ↓
+OpenAI Embeddings
+   ↓
+MongoDB Collection
+   ↓
+MongoDB Vector Search
+   ↓
+Relevant Documents
+   ↓
+LLM
+   ↓
+Answer
+```
+
+---
+
+# 2. Technologies Used
+
+```text
+OpenAI
+   → Embedding generation
+
+MongoDB / MongoDB Atlas
+   → Document storage + vector search
+
+PyMongo
+   → Python client for MongoDB
+
+MongoDB Atlas Vector Search
+   → Semantic similarity retrieval
+```
+
+The notebook uses OpenAI's `text-embedding-3-large` model for embeddings.
+
+---
+
+# 3. Generate Embeddings
+
+The notebook creates an OpenAI client:
+
+```python
+from openai import OpenAI
+
+client = OpenAI()
+
+model = "text-embedding-3-large"
+```
+
+Then defines:
+
+```python
+def get_embedding(text, input_type="document"):
+    response = client.embeddings.create(
+        model=model,
+        input=text
+    )
+
+    return response.data[0].embedding
+```
+
+### What does this do?
+
+It converts text into a numerical vector.
+
+```text
+"MongoDB Vector Search"
+          ↓
+    Embedding Model
+          ↓
+[0.021, -0.034, 0.017, ...]
+```
+
+These vectors represent the semantic meaning of the text.
+
+---
+
+# 4. Store Documents in MongoDB
+
+The notebook connects to MongoDB using `MongoClient`.
+
+```python
+from pymongo import MongoClient
+
+client = MongoClient(MONGODB_URI)
+
+collection = client["rag_db"]["test"]
+```
+
+Documents containing text and embeddings are inserted into the collection:
+
+```python
+result = collection.insert_many(docs_to_insert)
+```
+
+So the MongoDB document conceptually looks like:
+
+```json
+{
+    "text": "Some document content...",
+    "embedding": [0.012, -0.034, 0.056, ...]
+}
+```
+
+The notebook inserts the prepared documents into the `rag_db.test` collection.
+
+> **Security note:** The uploaded notebook contains a MongoDB connection string with credentials. Don't commit credentials or connection strings to GitHub; use environment variables/secrets instead.
+
+---
+
+# 5. MongoDB Vector Search Index
+
+Before performing vector search, MongoDB needs a **Vector Search index**.
+
+The notebook creates:
+
+```python
+index_name = "vector_index"
+```
+
+with:
+
+```python
+{
+    "type": "vector",
+    "numDimensions": 3072,
+    "path": "embedding",
+    "similarity": "cosine"
+}
+```
+
+### Important fields
+
+| Field           | Meaning                             |
+| --------------- | ----------------------------------- |
+| `numDimensions` | Size of embedding vector            |
+| `path`          | MongoDB field containing embeddings |
+| `similarity`    | Similarity metric                   |
+| `type`          | Vector search index                 |
+
+The notebook uses **cosine similarity** and 3072-dimensional embeddings.
+
+---
+
+# 6. Why `numDimensions = 3072`?
+
+The notebook uses:
+
+```text
+text-embedding-3-large
+```
+
+and configures the vector index for:
+
+```text
+3072 dimensions
+```
+
+Therefore:
+
+```text
+Embedding
+    ↓
+3072 numbers
+    ↓
+MongoDB vector index
+```
+
+The index configuration must match the dimensionality of the embeddings being stored.
+
+---
+
+# 7. Wait for Index to Become Queryable
+
+The notebook checks whether the index is ready:
+
+```python
+while True:
+    indices = list(
+        collection.list_search_indexes(index_name)
+    )
+
+    if len(indices) and indices[0].get("queryable"):
+        break
+
+    time.sleep(5)
+```
+
+Flow:
+
+```text
+Create Vector Index
+       ↓
+Index Building
+       ↓
+Check queryable?
+   ↓          ↓
+ No          Yes
+ ↓            ↓
+Wait        Search
+```
+
+This is necessary because the index may take time to become ready for querying.
+
+---
+
+# 8. MongoDB `$vectorSearch`
+
+The actual vector search uses MongoDB's aggregation pipeline:
+
+```python
+{
+    "$vectorSearch": {
+        "index": "vector_index",
+        "queryVector": query_embedding,
+        "path": "embedding",
+        "numCandidates": 3072,
+        "limit": 5
+    }
+}
+```
+
+### Meaning
+
+```text
+queryVector
+    ↓
+Compare against
+    ↓
+embedding field
+    ↓
+Using vector_index
+    ↓
+Return top 5
+```
+
+The notebook uses `numCandidates=3072` and `limit=5`.
+
+---
+
+# 9. `numCandidates` vs `limit`
+
+This is an important interview question.
+
+### `numCandidates`
+
+Number of candidates considered during approximate vector search.
+
+```text
+numCandidates = 3072
+```
+
+### `limit`
+
+Number of final results returned.
+
+```text
+limit = 5
+```
+
+Conceptually:
+
+```text
+MongoDB Collection
+       ↓
+Consider ~3072 candidates
+       ↓
+Similarity ranking
+       ↓
+Return top 5
+```
+
+So:
+
+> **`numCandidates` controls the search candidate pool; `limit` controls how many final documents are returned.**
+
+---
+
+# 10. Query-Time Embedding
+
+When a user asks a question:
+
+```python
+query_embedding = get_embedding(
+    query,
+    input_type="query"
+)
+```
+
+The query is converted into the **same embedding space** as the stored documents.
+
+```text
+User Query
+    ↓
+OpenAI Embedding
+    ↓
+Query Vector
+    ↓
+MongoDB Vector Search
+```
+
+This allows semantic rather than simple keyword matching.
+
+---
+
+# 11. Complete Retrieval Function
+
+The notebook defines:
+
+```python
+def get_query_results(query):
+
+    query_embedding = get_embedding(
+        query,
+        input_type="query"
+    )
+
+    pipeline = [
+        {
+            "$vectorSearch": {
+                "index": "vector_index",
+                "queryVector": query_embedding,
+                "path": "embedding",
+                "numCandidates": 3072,
+                "limit": 5
+            }
+        },
+        {
+            "$project": {
+                "_id": 0,
+                "text": 1
+            }
+        }
+    ]
+
+    results = collection.aggregate(pipeline)
+
+    array_of_results = []
+
+    for doc in results:
+        array_of_results.append(doc)
+
+    return array_of_results
+```
+
+The function:
+
+1. Embeds the query.
+2. Runs MongoDB vector search.
+3. Retrieves the top 5 results.
+4. Projects only the `text` field.
+5. Returns the results as a Python list.
+
+---
+
+# 12. Why `$project`?
+
+The pipeline contains:
+
+```python
+"$project": {
+    "_id": 0,
+    "text": 1
+}
+```
+
+This controls which fields are returned.
+
+Instead of returning:
+
+```text
+_id
+text
+embedding
+other metadata
+```
+
+it returns:
+
+```text
+text
+```
+
+This prevents unnecessarily passing large embedding vectors to the next stage of the application.
+
+---
+
+# 13. Complete RAG Architecture
+
+The notebook mainly demonstrates the **retrieval/vector-search portion**.
+
+The complete conceptual RAG architecture is:
+
+```text
+             INGESTION
+                 │
+                 ↓
+          Documents
+                 │
+                 ↓
+       OpenAI Embeddings
+                 │
+                 ↓
+      MongoDB Collection
+       ┌─────────┴─────────┐
+       │                   │
+      Text             Embedding
+                           │
+                           ↓
+                  Vector Search Index
+
+
+              QUERY TIME
+                 │
+                 ↓
+            User Query
+                 │
+                 ↓
+       OpenAI Embeddings
+                 │
+                 ↓
+       MongoDB $vectorSearch
+                 │
+                 ↓
+          Top-K Documents
+                 │
+                 ↓
+          Context + Query
+                 │
+                 ↓
+                LLM
+                 │
+                 ↓
+             Answer
+```
+
+**Important:** The uploaded notebook explicitly implements the embedding, MongoDB storage, index creation, and vector-search portions. It does not show a final LLM generation chain after `get_query_results()`.
+
+---
+
+# 14. MongoDB RAG vs FAISS RAG
+
+You previously worked with FAISS-based RAG.
+
+### FAISS
+
+```text
+Documents
+   ↓
+Embeddings
+   ↓
+FAISS
+   ↓
+Similarity Search
+```
+
+### MongoDB
+
+```text
+Documents
+   ↓
+Embeddings
+   ↓
+MongoDB Collection
+   ↓
+Atlas Vector Search
+```
+
+### Key Difference
+
+| FAISS                                                 | MongoDB                                       |
+| ----------------------------------------------------- | --------------------------------------------- |
+| Primarily vector index/library                        | Full database                                 |
+| In-memory/local commonly used                         | Persistent database                           |
+| Vector retrieval                                      | Vector + database capabilities                |
+| Good for prototypes                                   | Better suited to database-backed applications |
+| Metadata/database operations limited compared with DB | Native document storage + filtering           |
+
+---
+
+# 15. MongoDB Vector Search vs Normal MongoDB Search
+
+### Normal search
+
+```text
+"MongoDB"
+   ↓
+Keyword/text matching
+```
+
+### Vector search
+
+```text
+"How does MongoDB find similar documents?"
+              ↓
+          Embedding
+              ↓
+        Semantic Search
+              ↓
+    Conceptually related docs
+```
+
+Vector search focuses on **semantic similarity**, not just exact keyword matches.
+
+---
+
+# 16. Why MongoDB for RAG?
+
+A major advantage is that MongoDB can keep both:
+
+```text
+Application Data
+      +
+Embeddings
+      +
+Metadata
+```
+
+in the same database ecosystem.
+
+For example:
+
+```json
+{
+    "text": "...",
+    "embedding": [...],
+    "source": "annual_report.pdf",
+    "page": 12,
+    "department": "finance"
+}
+```
+
+This can support vector retrieval together with metadata filtering in a production RAG application.
+
+---
+
+# 17. Important Parameters to Remember
+
+### `path`
+
+```python
+"path": "embedding"
+```
+
+The field containing the stored vector.
+
+### `queryVector`
+
+```python
+"queryVector": query_embedding
+```
+
+The vector representation of the user's query.
+
+### `index`
+
+```python
+"index": "vector_index"
+```
+
+The MongoDB Vector Search index.
+
+### `numCandidates`
+
+```python
+"numCandidates": 3072
+```
+
+Candidate pool considered during approximate vector search.
+
+### `limit`
+
+```python
+"limit": 5
+```
+
+Number of final documents returned.
+
+---
+
+# 18. End-to-End Example
+
+User asks:
+
+```text
+"How does MongoDB vector search work?"
+```
+
+### Step 1 — Embed query
+
+```text
+Query
+ ↓
+OpenAI text-embedding-3-large
+ ↓
+3072-dimensional vector
+```
+
+### Step 2 — Search MongoDB
+
+```text
+Query Vector
+      ↓
+$vectorSearch
+      ↓
+vector_index
+      ↓
+Cosine Similarity
+```
+
+### Step 3 — Retrieve
+
+```text
+Top 5 relevant documents
+```
+
+### Step 4 — Augment
+
+```text
+Question + Retrieved Documents
+```
+
+### Step 5 — Generate
+
+```text
+LLM
+ ↓
+Final Answer
+```
+
+The notebook demonstrates Steps 1–3 directly.
+
+---
+
+# 19. Interview Questions
+
+### Q1. Why use MongoDB in RAG?
+
+> MongoDB can store application documents, metadata, and embeddings together while providing vector similarity search through MongoDB Atlas Vector Search.
+
+### Q2. What is `$vectorSearch`?
+
+> `$vectorSearch` is the MongoDB aggregation stage used to perform vector similarity search against an indexed embedding field.
+
+### Q3. What is `queryVector`?
+
+> It is the embedding representation of the user's query that MongoDB compares against stored document embeddings.
+
+### Q4. What is `numCandidates`?
+
+> It specifies the number of candidate vectors considered during approximate vector search before selecting the final results.
+
+### Q5. What is `limit`?
+
+> It specifies the number of final documents returned by the vector search.
+
+### Q6. Why use cosine similarity?
+
+> Cosine similarity measures the directional similarity between vectors and is commonly used to compare semantic embeddings.
+
+### Q7. Why create a vector index?
+
+> The vector index allows MongoDB to efficiently perform similarity search over the stored embeddings.
+
+### Q8. What happens during ingestion?
+
+> Documents are converted into embeddings and stored in MongoDB along with their text and potentially metadata.
+
+### Q9. What happens during retrieval?
+
+> The user's query is embedded and passed to `$vectorSearch`, which finds the most semantically similar stored document vectors.
+
+---
+
+# 20. Most Important Interview Distinction
+
+```text
+Embedding Model
+      ↓
+Converts text → vectors
+
+MongoDB
+      ↓
+Stores text + vectors + metadata
+
+Vector Search
+      ↓
+Finds similar vectors
+
+LLM
+      ↓
+Generates final answer
+```
+
+Remember:
+
+> **Embedding creates the vector → MongoDB stores it → Vector Search retrieves it → LLM generates the answer.**
+
+---
+
+# 21. Interview-Ready Explanation
+
+> “I implemented a RAG retrieval pipeline using MongoDB Atlas Vector Search. During ingestion, I generated embeddings for the documents using OpenAI's `text-embedding-3-large` model and stored the document text and embeddings in a MongoDB collection. I then created a MongoDB Vector Search index over the embedding field using cosine similarity. At query time, I converted the user's question into an embedding and used MongoDB's `$vectorSearch` aggregation stage to retrieve the top relevant documents. The search uses `numCandidates` to control the candidate pool and `limit` to control the final number of results. Those retrieved documents can then be passed as context to an LLM to complete the RAG pipeline.”
+
+---
+
+# 22. One-Line Memory Trick
+
+> **MongoDB RAG = Embed → Store → Index → `$vectorSearch` → Retrieve → Generate.**
+
+### 5 Things to Remember
+
+```text
+1. OpenAI Embeddings → Create vectors
+2. MongoDB → Store documents + vectors
+3. Vector Index → Enable efficient search
+4. $vectorSearch → Retrieve similar documents
+5. LLM → Generate grounded answer
+```
